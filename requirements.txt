@@ -1,0 +1,9 @@
+Flask
+gunicorn
+yfinance
+xgboost
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn

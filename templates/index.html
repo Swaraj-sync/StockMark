@@ -1,62 +1,37 @@
+<!-- templates/index.html -->
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stock Prediction App</title>
+    <title>Stock Movement Predictor</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            background-color: #f4f4f4;
-            padding: 20px;
-        }
-        h1 {
-            color: #333;
-        }
-        form {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            display: inline-block;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-        }
-        input {
-            padding: 10px;
-            margin: 10px;
-            border: 1px solid #ccc;
-            border-radius: 5px;
-        }
-        input[type="submit"] {
-            background: #28a745;
-            color: white;
-            border: none;
-            cursor: pointer;
-        }
-        input[type="submit"]:hover {
-            background: #218838;
-        }
-        .result {
-            margin-top: 20px;
-            font-size: 18px;
-            font-weight: bold;
-            color: #333;
-        }
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .form-group { margin-bottom: 15px; }
+        input[type="text"] { padding: 8px; width: 200px; }
+        button { padding: 8px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+        .result { margin-top: 20px; padding: 15px; border-radius: 5px; }
+        .green { background: #d4edda; color: #155724; }
+        .red { background: #f8d7da; color: #721c24; }
     </style>
 </head>
 <body>
-
-{% extends "layout.html" %}
-
-{% block content %}
-<h2>Enter Stock Ticker</h2>
-<form method="POST" action="/">
-    <label for="ticker">Stock Ticker:</label>
-    <input type="text" id="ticker" name="ticker" placeholder="e.g., NVDA" required>
-    <input type="submit" value="Predict">
+<h1>Stock Movement Predictor</h1>
+<form action="/predict" method="post">
+    <div class="form-group">
+        <label for="ticker">Enter Stock Ticker:</label>
+        <input type="text" id="ticker" name="ticker" required>
+        <button type="submit">Predict</button>
+    </div>
 </form>
 
-{% if prediction %}
-<h3>{{ prediction }}</h3>
+{% if result %}
+{% if result.error %}
+<div class="result red">{{ result.error }}</div>
+{% else %}
+<div class="result {{ result.color }}">
+    <h2>{{ result.ticker }} Prediction: {{ result.prediction }}</h2>
+    <p>Confidence: {{ result.confidence }}</p>
+</div>
 {% endif %}
-{% endblock %}
+{% endif %}
+</body>
+</html>

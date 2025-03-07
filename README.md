@@ -18,8 +18,8 @@
 
 ### **1️⃣ Clone the Repository**  
 ```bash
-git clone https://github.com/yourusername/Flask-Stock-Prediction.git
-cd Flask-Stock-Prediction
+git clone https://github.com/Swaraj-sync/StockMark.git
+cd StockMark
 ```
 
 ### **2️⃣ Create & Activate a Virtual Environment**  

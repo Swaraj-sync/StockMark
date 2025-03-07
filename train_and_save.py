@@ -2,94 +2,155 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import pickle
+import requests
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import xgboost as xgb
+from tqdm import tqdm  # For progress tracking
 
-# Download stock data (example: NVDA for 2023)
-data = yf.download('NVDA', start='2023-01-01', end='2023-12-31')
+# -------------------------------
+# Alpha Vantage Sentiment (Cached)
+# -------------------------------
+class SentimentCache:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.cache = {}
 
-# Define technical indicator functions
-def SMA(data, period=20):
-    return data['Close'].rolling(window=period).mean()
+    def get_sentiment(self, ticker, date):
+        """Get cached sentiment or fetch from API"""
+        if date in self.cache:
+            return self.cache[date]
 
-def EMA(data, period=20):
-    return data['Close'].ewm(span=period, adjust=False).mean()
+        try:
+            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={self.api_key}"
+            response = requests.get(url)
+            response.raise_for_status()
+            data = response.json()
 
-def RSI(data, period=14):
-    delta = data['Close'].diff(1)
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+            scores = []
+            for item in data.get('feed', []):
+                item_date = pd.to_datetime(item['time_published']).date()
+                if item_date == date.date():
+                    for ts in item.get('ticker_sentiment', []):
+                        if ts['ticker'] == ticker:
+                            scores.append(float(ts['ticker_sentiment_score']))
+
+            sentiment = np.mean(scores) if scores else 0.5
+            self.cache[date] = sentiment
+            return sentiment
+        except Exception as e:
+            print(f"Error fetching sentiment: {e}")
+            return 0.5
+
+# Initialize with your API key
+sentiment_cache = SentimentCache(api_key="2VFN6A6ODFKMGMVY")  # <-- Replace
+
+# -------------------------------
+# Data Preparation (Leak-Proof)
+# -------------------------------
+def prepare_features(df, ticker, is_train=True):
+    """Calculate features without future leakage"""
+    df = df.copy()
+
+    # Technical indicators (safe calculation)
+    def _sma(series, window):
+        return series.expanding(min_periods=1).mean() if is_train else series.rolling(window).mean()
+
+    df['SMA_50'] = _sma(df['Close'], 50)
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+
+    # RSI (safe calculation)
+    delta = df['Close'].diff()
+    gain = delta.where(delta > 0, 0).expanding(min_periods=1).mean() if is_train else delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).expanding(min_periods=1).mean() if is_train else (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    df['RSI'] = 100 - (100 / (1 + rs))
 
-def MACD(data, short_period=12, long_period=26, signal_period=9):
-    short_ema = EMA(data, short_period)
-    long_ema = EMA(data, long_period)
-    macd = short_ema - long_ema
-    signal = macd.ewm(span=signal_period, adjust=False).mean()
-    return macd, signal
+    # Lagged features
+    df['Lag1_Close'] = df['Close'].shift(1)
+    df['Lag2_Close'] = df['Close'].shift(2)
 
-def OBV(data):
-    return (np.sign(data['Close'].diff()) * data['Volume']).fillna(0).cumsum()
+    # Volume features
+    df['Price_Range'] = df['High'] - df['Low']
+    df['Volume_Change'] = df['Volume'].pct_change()
 
-def add_features(data):
-    data['SMA_50'] = SMA(data, 50)
-    data['EMA_20'] = EMA(data, 20)
-    data['RSI'] = RSI(data)
-    data['MACD'], data['Signal'] = MACD(data)
-    data['OBV'] = OBV(data)
-    data['Price_Range'] = data['High'] - data['Low']
-    data['Volume_Change'] = data['Volume'].pct_change()
-    data['Lag1_Close'] = data['Close'].shift(1)
-    data['Lag2_Close'] = data['Close'].shift(2)
-    return data.dropna()
+    # Add sentiment (with progress bar)
+    print(f"Fetching sentiment for {len(df)} days...")
+    df['Sentiment'] = [sentiment_cache.get_sentiment(ticker, date) for date in tqdm(df.index)]
 
-# Feature engineering
-data = add_features(data)
+    return df.dropna()
 
-data['Target'] = np.where(data['Close'].shift(-5) > data['Close'], 1, 0)
-data = data.iloc[:-5]
+# -------------------------------
+# Main Pipeline
+# -------------------------------
+# 1. Download raw data
+ticker = "NVDA"
+raw_data = yf.download(ticker, start='2020-01-01', end='2023-12-31')  # 4 years for better splits
 
-# Select features and target
-feature_cols = ['SMA_50', 'EMA_20', 'RSI', 'MACD', 'Signal', 'OBV', 'Price_Range', 'Volume_Change', 'Lag1_Close', 'Lag2_Close']
-X = data[feature_cols]
-y = data['Target']
+# 2. Chronological split (no shuffle!)
+train_size = int(len(raw_data) * 0.7)  # 70% training
+train_raw = raw_data.iloc[:train_size]
+test_raw = raw_data.iloc[train_size:]
 
-train_size = int(len(X) * 0.8)
-X_train, X_test = X.iloc[:train_size], X.iloc[train_size:]
-y_train, y_test = y.iloc[:train_size], y.iloc[train_size:]
+# 3. Prepare features separately
+train_data = prepare_features(train_raw, ticker, is_train=True)
+test_data = prepare_features(test_raw, ticker, is_train=False)
 
-# Scale features
+# 4. Create targets (5-day future price)
+train_data['Target'] = (train_data['Close'].shift(-5) > train_data['Close']).astype(int)
+test_data['Target'] = (test_data['Close'].shift(-5) > test_data['Close']).astype(int)
+train_data = train_data.iloc[:-5].dropna()
+test_data = test_data.iloc[:-5].dropna()
+
+# 5. Feature selection
+feature_cols = ['SMA_50', 'EMA_20', 'RSI', 'Lag1_Close', 'Lag2_Close',
+                'Price_Range', 'Volume_Change', 'Sentiment']
+X_train = train_data[feature_cols]
+y_train = train_data['Target']
+X_test = test_data[feature_cols]
+y_test = test_data['Target']
+
+# 6. Scaling (fit only on train)
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled  = scaler.transform(X_test)
+X_test_scaled = scaler.transform(X_test)
 
-# Feature selection
-selector = SelectKBest(score_func=f_classif, k='all')
+# 7. Feature selection (fit only on train)
+selector = SelectKBest(f_classif, k='all')
 X_train_selected = selector.fit_transform(X_train_scaled, y_train)
-X_test_selected  = selector.transform(X_test_scaled)
+X_test_selected = selector.transform(X_test_scaled)
 
-# Hyperparameter tuning
+# 8. Model training
+model = xgb.XGBClassifier(
+    objective='binary:logistic',
+    learning_rate=0.05,
+    max_depth=5,
+    n_estimators=300,
+    early_stopping_rounds=20,
+    eval_metric='logloss'
+)
+
+# Time-series cross-validation
 tscv = TimeSeriesSplit(n_splits=5)
-param_grid = {
-    'max_depth': [3, 5, 7],
-    'learning_rate': [0.01, 0.05, 0.1],
-    'n_estimators': [100, 200],
-    'colsample_bytree': [0.8, 0.9, 1.0]
-}
-xgb_model = xgb.XGBClassifier(objective='binary:logistic', use_label_encoder=False, eval_metric='logloss')
-grid_search = GridSearchCV(estimator=xgb_model, param_grid=param_grid, cv=tscv, scoring='accuracy', verbose=0)
-grid_search.fit(X_train_selected, y_train)
-best_model = grid_search.best_estimator_
+model.fit(X_train_selected, y_train,
+          eval_set=[(X_test_selected, y_test)],
+          verbose=False)
 
-# Save artifacts
-with open("model.pkl", "wb") as f_model:
-    pickle.dump(best_model, f_model)
-with open("scaler.pkl", "wb") as f_scaler:
-    pickle.dump(scaler, f_scaler)
-with open("selector.pkl", "wb") as f_selector:
-    pickle.dump(selector, f_selector)
+# 9. Evaluation
+y_pred = model.predict(X_test_selected)
+print("\nFinal Test Performance:")
+print(f"Accuracy: {accuracy_score(y_test, y_pred):.2f}")
+print("Classification Report:")
+print(classification_report(y_test, y_pred))
+print("Confusion Matrix:")
+print(confusion_matrix(y_test, y_pred))
 
-print("Artifacts saved: model.pkl, scaler.pkl, selector.pkl")
+# 10. Save artifacts
+with open("model.pkl", "wb") as f:
+    pickle.dump(model, f)
+with open("scaler.pkl", "wb") as f:
+    pickle.dump(scaler, f)
+with open("selector.pkl", "wb") as f:
+    pickle.dump(selector, f)

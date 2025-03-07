@@ -7,10 +7,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import SelectKBest, f_classif
 import xgboost as xgb
 
-# Download stock data (example: NVDA for 2023)
+
 data = yf.download('NVDA', start='2023-01-01', end='2023-12-31')
 
-# Define technical indicator functions
+
 def SMA(data, period=20):
     return data['Close'].rolling(window=period).mean()
 
@@ -46,13 +46,13 @@ def add_features(data):
     data['Lag2_Close'] = data['Close'].shift(2)
     return data.dropna()
 
-# Feature engineering
+
 data = add_features(data)
 
 data['Target'] = np.where(data['Close'].shift(-5) > data['Close'], 1, 0)
 data = data.iloc[:-5]
 
-# Select features and target
+
 feature_cols = ['SMA_50', 'EMA_20', 'RSI', 'MACD', 'Signal', 'OBV', 'Price_Range', 'Volume_Change', 'Lag1_Close', 'Lag2_Close']
 X = data[feature_cols]
 y = data['Target']
@@ -61,17 +61,17 @@ train_size = int(len(X) * 0.8)
 X_train, X_test = X.iloc[:train_size], X.iloc[train_size:]
 y_train, y_test = y.iloc[:train_size], y.iloc[train_size:]
 
-# Scale features
+
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled  = scaler.transform(X_test)
 
-# Feature selection
+
 selector = SelectKBest(score_func=f_classif, k='all')
 X_train_selected = selector.fit_transform(X_train_scaled, y_train)
 X_test_selected  = selector.transform(X_test_scaled)
 
-# Hyperparameter tuning
+
 tscv = TimeSeriesSplit(n_splits=5)
 param_grid = {
     'max_depth': [3, 5, 7],
@@ -84,7 +84,7 @@ grid_search = GridSearchCV(estimator=xgb_model, param_grid=param_grid, cv=tscv, 
 grid_search.fit(X_train_selected, y_train)
 best_model = grid_search.best_estimator_
 
-# Save artifacts
+
 with open("model.pkl", "wb") as f_model:
     pickle.dump(best_model, f_model)
 with open("scaler.pkl", "wb") as f_scaler:
